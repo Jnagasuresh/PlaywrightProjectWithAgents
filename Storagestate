@@ -1,0 +1,130 @@
+# Playwright Storagestate
+
+<p>Storage state is a way to save and reuse browser session data (cookies, localStorage, sessionStorage) so you don't repeat actions like login in every test.</p>
+
+## Save Storage state
+```
+await context.storageState({ path: 'storageState.json' });
+```
+
+## Load Storage state into new context
+
+```
+const context = await browser.newContext({
+  storageState: 'storageState.json'
+});
+```
+
+## Most Common Use Case — Skip Login in Every Test
+## Step 1: Create a global setup to login once
+
+```
+// global-setup.ts
+import { chromium } from '@playwright/test';
+
+async function globalSetup() {
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+
+  await page.goto('https://myapp.com/login');
+  await page.locator('#email').fill('user@example.com');
+  await page.locator('#password').fill('password123');
+  await page.locator('#submit').click();
+  await page.waitForURL('/dashboard');
+
+  // Save session to file
+  await page.context().storageState({ path: 'storageState.json' });
+  await browser.close();
+}
+
+export default globalSetup;
+```
+## Step 2: Register it in playwright.config.ts
+
+```
+// playwright.config.ts
+export default defineConfig({
+  globalSetup: './global-setup.ts',
+  use: {
+    storageState: 'storageState.json', // applied to all tests
+  }
+});
+```
+## Step 3: Tests start already logged in
+
+```
+// tests/dashboard.spec.ts
+test('dashboard loads correctly', async ({ page }) => {
+  await page.goto('/dashboard'); // already authenticated!
+  await expect(page.locator('.welcome')).toBeVisible();
+});
+```
+
+## Multiple User Roles
+A very common real-world pattern — different state files per role.
+
+```
+// global-setup.ts
+async function globalSetup() {
+  const browser = await chromium.launch();
+
+  // Admin user
+  const adminPage = await browser.newPage();
+  await loginAs(adminPage, 'admin@app.com', 'adminpass');
+  await adminPage.context().storageState({ path: '.auth/admin.json' });
+
+  // Regular user
+  const userPage = await browser.newPage();
+  await loginAs(userPage, 'user@app.com', 'userpass');
+  await userPage.context().storageState({ path: '.auth/user.json' });
+
+  await browser.close();
+}
+```
+```
+// Use per-test via fixtures
+test.use({ storageState: '.auth/admin.json' });
+
+test('admin can delete users', async ({ page }) => {
+  await page.goto('/admin/users');
+  await page.locator('.delete-btn').first().click();
+  await expect(page.locator('.success-toast')).toBeVisible();
+});
+```
+
+## Inline Usage (Without a File)
+Save and pass state directly as an object — useful for dynamic sessions.
+
+```
+const context1 = await browser.newContext();
+const page1 = await context1.newPage();
+// ... do login ...
+const state = await context1.storageState(); // no path = returns object
+
+// Reuse in another context
+const context2 = await browser.newContext({ storageState: state });
+const page2 = await context2.newPage();
+// page2 is now authenticated
+```
+
+## Test role-based access control
+
+```
+test.describe('Admin only pages', () => {
+  test.use({ storageState: '.auth/admin.json' });
+
+  test('admin sees delete button', async ({ page }) => {
+    await page.goto('/users');
+    await expect(page.locator('.delete-btn')).toBeVisible();
+  });
+});
+
+test.describe('Regular user pages', () => {
+  test.use({ storageState: '.auth/user.json' });
+
+  test('user cannot see delete button', async ({ page }) => {
+    await page.goto('/users');
+    await expect(page.locator('.delete-btn')).toBeHidden();
+  });
+});
+```
